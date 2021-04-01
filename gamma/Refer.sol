@@ -37,7 +37,7 @@ contract Refer {
 
     event NewReferr(address indexed usr, address refer);
 
-    // 参与初级熔炼
+    // 提交推荐关系
     function submitRefer(address usr, address referrer) public returns (bool) {
         require(usr == tx.origin, "usr must be tx origin");
 

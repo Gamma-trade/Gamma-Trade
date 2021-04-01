@@ -161,14 +161,12 @@ contract GAMMASupply is Ownable, Rank {
 //        setting = SystemSetting(1, 1, 10000e6, 10, 10000e6);
     }
 
-    // 产生一个[0 - 8]的随机数
     function winnerNumber() internal returns(uint256) {
         uint256 win = uint256(keccak256(abi.encodePacked(now, msg.sender, nonce))) % GROUP_NUM_LIMIT;
         nonce++;
         return win;
     }
 
-    // 系统只运行在每天的[20 - 21]点
     function requireSystemActive() internal view {
         uint256 startHour = 12;
         uint256 endHour = 13;
@@ -176,7 +174,6 @@ contract GAMMASupply is Ownable, Rank {
         require(hour >= startHour && hour <= endHour, "system only works in [20 - 21] hour!");
     }
 
-    // 判断是否要进入下一层/轮
     function enterNextLayer() internal returns (bool) {
         bool flagRaceBegin = false;
         setting.layers = setting.layers.add(1);
@@ -199,13 +196,11 @@ contract GAMMASupply is Ownable, Rank {
         return flagRaceBegin;
     }
 
-    // 获取熔炼成功的GSC数量
     function getForgeWinAmount (address usr) public view returns (uint256 gscAmount, uint256 usdtAmount) {
         gscAmount =  forgeWinAmount[usr].gscAmount;
         usdtAmount = forgeWinAmount[usr].usdtAmount;
     }
 
-    // 参与初级熔炼
     function forgeLow(address referrer) public {
         requireSystemActive();
         require(block.number >= startBlock, "next round not yet started");
@@ -328,7 +323,6 @@ contract GAMMASupply is Ownable, Rank {
         emit ForgeLow(msg.sender, USDTAmountLow);
     }
 
-    // 为TOP K分发奖励
     function distributeBonus(address[] memory topList, uint256 totalBonus) internal {
         require(topList.length <= bonusRate.length, "topList above RANK_TOP_NUM");
 

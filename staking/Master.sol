@@ -48,8 +48,8 @@ contract Master is Pausable, Rank {
 
     // 推荐记录结构体
     struct ReferRecord {
-        address referAddr;
-        uint256 referPower;
+        address addr;
+        uint256 amount;
     }
 
     // 用户的持币挖矿信息
@@ -155,30 +155,30 @@ contract Master is Pausable, Rank {
 
         // 抵押和矿池算力部分, 90%
         poolInfo.push(PoolInfo({
-        weight:90,
-        lastRewardBlock:block.number,
-        accGDXPerShare:0,
-        totalShares:0
+            weight:90,
+            lastRewardBlock:block.number,
+            accGDXPerShare:0,
+            totalShares:0
         }));
 
         // 矿池部分, 10%
         poolInfo.push(PoolInfo({
-        weight:10,
-        lastRewardBlock:block.number,
-        accGDXPerShare:0,
-        totalShares:0
+            weight:10,
+            lastRewardBlock:block.number,
+            accGDXPerShare:0,
+            totalShares:0
         }));
 
         //
         minePoolInfo.push(MinePool({
-        id: 0,
-        owner: address(0),
-        name:0x0000000000000000000000000000000000000000000000000000000000000000,
-        totalAmount:0,
-        totalPower:0,
-        totalAddress: 0,
-        totalBonus:0,
-        hash:blockhash(block.number)
+            id: 0,
+            owner: address(0),
+            name:0x0000000000000000000000000000000000000000000000000000000000000000,
+            totalAmount:0,
+            totalPower:0,
+            totalAddress: 0,
+            totalBonus:0,
+            hash:blockhash(block.number)
         }));
     }
 
@@ -211,15 +211,25 @@ contract Master is Pausable, Rank {
 
     function updateUserStakingShares(address _usr) public {
         UserInfo storage user = userInfo[_usr];
+        PoolInfo storage pool = poolInfo[0];
+
+        uint256 preUsrShares = user.shares;
+
         user.shares = user.stakingPower.add(user.extraPower).add(user.referPower).add(user.minerPoolPower);
         user.rewardDebt = user.shares.mul(poolInfo[0].accGDXPerShare).div(1e12);
+        pool.totalShares = pool.totalShares.add(user.shares).sub(preUsrShares);
     }
 
     function updateUserMingPower(address _usr, uint256 _miningPower) public {
         UserInfo storage user = userInfo[_usr];
+        PoolInfo storage pool = poolInfo[0];
+
+        uint256 preUsrShares = user.shares;
+
         user.minerPoolPower = _miningPower;
         user.shares = user.stakingPower.add(user.extraPower).add(user.referPower).add(user.minerPoolPower);
         user.rewardDebt = user.shares.mul(poolInfo[0].accGDXPerShare).div(1e12);
+        pool.totalShares = pool.totalShares.add(user.shares).sub(preUsrShares);
     }
 
     // 获取用户未取回的GDX staking收益
@@ -310,7 +320,6 @@ contract Master is Pausable, Rank {
         require(_amount > 0, "staking amount must > 0");
 
         address sender = msg.sender;
-        PoolInfo storage pool = poolInfo[0];
         UserInfo storage user = userInfo[sender];
 
         massUpdatePools();
@@ -321,16 +330,15 @@ contract Master is Pausable, Rank {
         // 转移GAMMA
         require(ITRC20(gamma).transferFrom(sender, address(this), _amount), "deposit transfer failed");
 
-        uint256 preUsrShares = user.shares;
-
         // 更新用户质押份额
         user.amount = user.amount.add(_amount);
         user.stakingPower = user.stakingPower.add(_amount);
         user.extraPower = getExtraPower(sender);
         updateUserStakingShares(sender);
+        if (user.unStakingAt == 0) {
+            user.unStakingAt = block.timestamp;
+        }
 
-        // 更新收益池的shares
-        pool.totalShares = pool.totalShares.add(user.shares).sub(preUsrShares);
         // 更新总算力
         addTotalPower(_amount);
 
@@ -345,16 +353,17 @@ contract Master is Pausable, Rank {
             payStakingBonus(referr);
 
             uint256 extraPower = getReferPower(_amount); // 推荐人获得直推算力20%加成
-            uint256 xpreUsrShares = ref.shares;
-
             ref.referPower = ref.referPower.add(extraPower);
             updateUserStakingShares(referr);
 
-            // 更新收益池的shares
-            pool.totalShares = pool.totalShares.add(ref.shares).sub(xpreUsrShares);
-
             // 更新总算力
             addTotalPower(extraPower);
+
+            // 推荐记录
+            referRecords[referr].push(ReferRecord({
+                addr:sender,
+                amount:_amount
+            }));
         }
 
         emit Staking(sender, _amount);
@@ -387,7 +396,6 @@ contract Master is Pausable, Rank {
 
         address sender = msg.sender;
         UserInfo storage user = userInfo[sender];
-        PoolInfo storage pool = poolInfo[0];
 
         // 更新staking池
         updatePool(0);
@@ -410,8 +418,6 @@ contract Master is Pausable, Rank {
             require(false, "user staking power error!");
         }
 
-        uint256 preUsrShares = user.shares;
-
         // 更新用户质押份额
         user.amount = user.amount.sub(_amount);
         user.stakingPower = user.stakingPower.sub(_amount);
@@ -419,9 +425,6 @@ contract Master is Pausable, Rank {
         user.extraPower = getExtraPower(sender);
         user.unStakingAt = block.timestamp;
         updateUserStakingShares(sender);
-
-        // 更新收益池的shares
-        pool.totalShares = pool.totalShares.add(user.shares).sub(preUsrShares);
 
         // 减少全网算力
         subTotalPower(_amount);
@@ -433,7 +436,6 @@ contract Master is Pausable, Rank {
             payStakingBonus(referr);
 
             uint256 extraPower = getReferPower(_amount); // 推荐人获得直推算力20%加成
-            uint256 xpreUsrShares = ref.shares;
 
             if (ref.referPower < extraPower) {
                 require(false, "ref.referPower < extraPower");
@@ -443,9 +445,6 @@ contract Master is Pausable, Rank {
             }
             ref.referPower = ref.referPower.sub(extraPower);
             updateUserStakingShares(referr);
-
-            // 更新收益池的shares
-            pool.totalShares = pool.totalShares.add(ref.shares).sub(xpreUsrShares);
 
             // 减少全网算力
             subTotalPower(extraPower);
@@ -481,6 +480,10 @@ contract Master is Pausable, Rank {
         // 取回收益GDX
         payStakingBonus(sender);
         user.rewardDebt = user.shares.mul(poolInfo[0].accGDXPerShare).div(1e12);
+        if (user.unStakingAt == 0) {
+            user.unStakingAt = block.timestamp;
+        }
+        updateUserStakingShares(sender);
 
         // 取回矿池收益
         uint256 pid;
@@ -855,8 +858,13 @@ contract Master is Pausable, Rank {
 
     // 我的周期加成
     function getExtraPower(address usr) public view returns (uint256) {
+        uint256 base = 10 days;
+        if (flagTestNet) {
+            base = 10 minutes;
+        }
+
         UserInfo storage info = userInfo[usr];
-        uint256 delta = (block.timestamp.sub(info.unStakingAt)).div(10 days);
+        uint256 delta = (block.timestamp.sub(info.unStakingAt)).div(base);
         if (delta > 3) {
             delta = 3;
         }
@@ -868,12 +876,18 @@ contract Master is Pausable, Rank {
         return referRecords[usr].length;
     }
 
+    // 我的有效邀请算力
+    function getRealReferPower(address usr) public view returns (uint256) {
+        UserInfo storage info = userInfo[usr];
+        return info.referPower;
+    }
+
     // 我的总邀请算力
     function getTotalReferPower(address usr) public view returns (uint256) {
         uint256 len = referRecordsLength(usr);
         uint totalReferPower = 0;
         for (uint256 i = 0; i < len; i++) {
-            totalReferPower = totalReferPower.add(referRecords[usr][i].referPower);
+            totalReferPower = totalReferPower.add(referRecords[usr][i].amount);
         }
         return totalReferPower;
     }

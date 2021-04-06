@@ -161,12 +161,6 @@ contract GAMMASupply is Ownable, Rank {
 //        setting = SystemSetting(1, 1, 10000e6, 10, 10000e6);
     }
 
-    function winnerNumber() internal returns(uint256) {
-        uint256 win = uint256(keccak256(abi.encodePacked(now, msg.sender, nonce))) % GROUP_NUM_LIMIT;
-        nonce++;
-        return win;
-    }
-
     function requireSystemActive() internal view {
         uint256 startHour = 12;
         uint256 endHour = 13;

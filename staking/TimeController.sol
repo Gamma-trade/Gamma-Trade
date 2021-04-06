@@ -1,8 +1,5 @@
 pragma solidity 0.5.8;
 
-import "./Ownable.sol";
-import "./TRC20.sol";
-
 
 ////////////////////////////////////////////
 //    ┏┓   ┏┓
@@ -29,13 +26,10 @@ import "./TRC20.sol";
 ////////////////////////////////////////////
 
 
-contract GDXToken is TRC20("GDX Token", "GDX"), Ownable {
-    /// @notice Creates `_amount` token to `_to`. Must only be called by the owner (master).
-    function mint(address _to, uint256 _amount) public onlyOwner {
-        _mint(_to, _amount);
-    }
+contract TimeController {
+    uint public offsetTime;
 
-    function setMaxSupply(uint256 _max_supply) public onlyOwner {
-        MAX_SUPPLY = _max_supply;
+    function timestemp() external view returns (uint) {
+        return now + offsetTime;
     }
 }

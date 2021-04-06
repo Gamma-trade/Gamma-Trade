@@ -1,7 +1,6 @@
 pragma solidity 0.5.8;
 
 import "./Ownable.sol";
-import "./TRC20.sol";
 
 
 ////////////////////////////////////////////
@@ -29,13 +28,33 @@ import "./TRC20.sol";
 ////////////////////////////////////////////
 
 
-contract GDXToken is TRC20("GDX Token", "GDX"), Ownable {
-    /// @notice Creates `_amount` token to `_to`. Must only be called by the owner (master).
-    function mint(address _to, uint256 _amount) public onlyOwner {
-        _mint(_to, _amount);
+contract Pausable is Ownable {
+    event Paused(address account);
+    event Unpaused(address account);
+
+    bool public paused;
+
+    constructor () internal {
+        paused = false;
     }
 
-    function setMaxSupply(uint256 _max_supply) public onlyOwner {
-        MAX_SUPPLY = _max_supply;
+    modifier WhenNotPaused() {
+        require(!paused, "Pausable: paused");
+        _;
+    }
+
+    modifier WhenPaused() {
+        require(paused, "Pausable: not paused");
+        _;
+    }
+
+    function Pause() public onlyOwner {
+        paused = true;
+        emit Paused(msg.sender);
+    }
+
+    function Unpause() public onlyOwner {
+        paused = false;
+        emit Unpaused(msg.sender);
     }
 }

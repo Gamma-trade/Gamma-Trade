@@ -134,6 +134,8 @@ contract Master is Pausable, Rank {
         return levelMapping[owner];
     }
 
+    bool initialized;
+
     // Events
     event UpgradeLevel(address indexed user, uint256 level);
     event Staking(address indexed user, uint256 amount);
@@ -152,34 +154,40 @@ contract Master is Pausable, Rank {
         gdx = _gdx;
         gamma = _gamma;
         refer = _refer;
+    }
 
-        // 抵押和矿池算力部分, 90%
-        poolInfo.push(PoolInfo({
-            weight:90,
-            lastRewardBlock:block.number,
-            accGDXPerShare:0,
-            totalShares:0
-        }));
+    function init() public onlyOwner {
+        if (!initialized) {
+            // 抵押和矿池算力部分, 90%
+            poolInfo.push(PoolInfo({
+                weight:90,
+                lastRewardBlock:block.number,
+                accGDXPerShare:0,
+                totalShares:0
+            }));
 
-        // 矿池部分, 10%
-        poolInfo.push(PoolInfo({
-            weight:10,
-            lastRewardBlock:block.number,
-            accGDXPerShare:0,
-            totalShares:0
-        }));
+            // 矿池部分, 10%
+            poolInfo.push(PoolInfo({
+                weight:10,
+                lastRewardBlock:block.number,
+                accGDXPerShare:0,
+                totalShares:0
+            }));
 
-        //
-        minePoolInfo.push(MinePool({
-            id: 0,
-            owner: address(0),
-            name:0x0000000000000000000000000000000000000000000000000000000000000000,
-            totalAmount:0,
-            totalPower:0,
-            totalAddress: 0,
-            totalBonus:0,
-            hash:blockhash(block.number)
-        }));
+            // 0 矿池
+            minePoolInfo.push(MinePool({
+                id: 0,
+                owner: address(0),
+                name:0x64656661756c7400000000000000000000000000000000000000000000000000,
+                totalAmount:0,
+                totalPower:0,
+                totalAddress: 0,
+                totalBonus:0,
+                hash:blockhash(block.number.sub(1))
+            }));
+
+//            updateMinePoolRank(0, 0);
+        }
     }
 
     function massUpdatePools() public {
@@ -361,8 +369,8 @@ contract Master is Pausable, Rank {
 
             // 推荐记录
             referRecords[referr].push(ReferRecord({
-                addr:sender,
-                amount:_amount
+            addr:sender,
+            amount:_amount
             }));
         }
 
@@ -508,61 +516,66 @@ contract Master is Pausable, Rank {
         require(level >= LEVEL_3, "level error");
 
         if (level == LEVEL_3) {
-            require(amount >= 3000e6);
+            require(amount >= 3000e6, "V3 need 3000 GDX");
         }
         if (level == LEVEL_4) {
-            require(amount >= 5000e6);
+            require(amount >= 5000e6, "V4 need 5000 GDX");
         }
         if (level == LEVEL_5) {
-            require(amount >= 6000e6);
+            require(amount >= 6000e6, "V5 need 6000 GDX");
         }
+
+        bool isPoolOwner;
+        (, isPoolOwner) = getUserMinePoolID(sender);
+        require(!isPoolOwner, "pool already exist");
 
         // 转移GDX
         require(gdx.transferFrom(sender, address(this), amount), "createPool: transfer failed");
 
         // 统计矿池算力
         address[] memory list = getReferList(sender);
-        uint256 totalAmount = 0;
+        uint256 poolAmount = 0;
         for (uint256 i = 0; i < list.length; i++) {
-            uint256 amnt = userInfo[list[i]].amount;
-            totalAmount = totalAmount.add(amnt);
+            address addr = list[i];
+            uint256 amnt = userInfo[addr].amount;
+            poolAmount = poolAmount.add(amnt);
         }
 
         uint256 poolID = getNewPoolID();
         // 创建矿池
         minePoolInfo.push(MinePool({
-        id: poolID,
-        owner: sender,
-        name:name,
-        totalAmount:totalAmount,
-        totalPower:totalAmount,
-        totalAddress: list.length.add(1),
-        totalBonus:0,
-        hash:blockhash(block.number)
+            id: poolID,
+            owner: sender,
+            name:name,
+            totalAmount: poolAmount,
+            totalPower: poolAmount,
+            totalAddress: list.length.add(1),
+            totalBonus:0,
+            hash:blockhash(block.number)
         }));
 
         // 添加矿池排名
         updateMinePoolRank(poolID, amount);
 
         // 保存 <用户 -> 矿池> 信息
-        uint256 miningPower = getMinePoolAddition(getLevel(sender)).mul(totalAmount).div(1000);
+        uint256 miningPower = getMinePoolAddition(getLevel(sender)).mul(poolAmount).div(1000);
         userMinePoolInfo[sender] = UserMinePool({
-        id: poolID,
-        amount:amount,
-        power:miningPower,
-        shares:amount,
-        rewardDebt: 0,
-        totalBonus:0
+            id: poolID,
+            amount:amount,
+            power:miningPower,
+            shares:amount,
+            rewardDebt: 0,
+            totalBonus:0
         });
 
         // 结算质押收益
-        updatePool(0);
+        massUpdatePools();
         payStakingBonus(sender);
 
+        // 更新周期加成
         UserInfo storage user = userInfo[sender];
         user.extraPower = getExtraPower(sender);
-        user.shares = user.stakingPower.add(user.extraPower).add(user.referPower);
-        user.rewardDebt = user.shares.mul(poolInfo[0].accGDXPerShare).div(1e12);
+        updateUserStakingShares(sender);
 
         return true;
     }
@@ -716,27 +729,22 @@ contract Master is Pausable, Rank {
 
         address sender = msg.sender;
 
-        if (levelMapping[owner] >= levl) {
+        if (levelMapping[owner] >= levl || levl > 5) {
             return false;
         }
 
         // 获取推荐列表
         address[] memory list = getReferList(sender);
-        uint256 c = 0;
-        for(uint256 i = 0; i < list.length; i++){
-            if (getLevel(list[i]) >= levl - 1) {
-                c++;
+        uint256 cnt = 0;
+        for(uint256 i = 0; i < list.length; i++) {
+            address addr = list[i];
+            uint256 balance = ITRC20(gamma).balanceOf(addr);
+            if (getLevel(addr) >= levl - 1 && balance >= minStakingGAMMA) {
+                cnt++;
             }
         }
-
-        if (levl == 1) { //
-            if (list.length < 10) {
-                return false;
-            }
-        } else if (levl >= 2) {
-            if(c < 5) {
-                return false;
-            }
+        if (cnt < 5) {
+            return false;
         }
 
         return true;
@@ -754,22 +762,19 @@ contract Master is Pausable, Rank {
         }
         ///////////////////////////////////////////
 
-        require(origin < levl, "upgrade: level is less");
+        require(origin < levl && levl <= 5, "cannot upgrade level");
 
         // 获取推荐列表
         address[] memory list = getReferList(sender);
-        uint256 c = 0;
+        uint256 cnt = 0;
         for(uint256 i = 0; i < list.length; i++) {
-            if (getLevel(list[i]) >= levl - 1) {
-                c++;
+            address addr = list[i];
+            uint256 balance = ITRC20(gamma).balanceOf(addr);
+            if (getLevel(addr) >= levl - 1 && balance >= minStakingGAMMA) {
+                cnt++;
             }
         }
-
-        if (levl == 1) { // 直推10个用户，升级V1
-            require(list.length >= 10, "upgrade v1 require 10 recommend user");
-        } else if (levl >= 2) { // 直推5个V1以上用户，升级更高级别
-            require(c >= 5, "upgrade: recommend less");
-        }
+        require(cnt >= 5, "upgrade failed, insufficient referrer count");
 
         levelMapping[sender] = levl;
         emit UpgradeLevel(sender, levl);
@@ -851,8 +856,13 @@ contract Master is Pausable, Rank {
 
     // 我的当前运行周期
     function getUsrPeriod(address usr) public view returns (uint256) {
+        uint256 base = 10 days;
+        if (flagTestNet) {
+            base = 10 minutes;
+        }
+
         UserInfo storage info = userInfo[usr];
-        uint256 delta = (block.timestamp.sub(info.unStakingAt)).div(1 days);
+        uint256 delta = (block.timestamp.sub(info.unStakingAt)).div(base);
         return delta;
     }
 

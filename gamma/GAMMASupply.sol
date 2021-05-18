@@ -36,41 +36,19 @@ import './Refer.sol';
 contract GAMMASupply is Ownable, Rank {
     using SafeMath for uint256;
 
-    struct winner {
-        address addr;
-        bool isWinner;
-    }
-
-    struct Record {
-        address addr; // 被推荐人地址
-        uint256 amount; // 奖励的USDT数量
-    }
-
     struct SystemSetting {
         uint256 round;  // 当前轮次
         uint256 layers; // 当前层数
-        uint256 limitPerLayer; // 当前轮每一层开放的GSC购买额度
+        uint256 limitPerLayer; // 当前轮每一层开放的GAMMA购买额度
         uint256 price; // 初始价格，放大100倍，方便整数计算
-        uint256 curLeftOver; // 当前层剩余的GSC额度
+        uint256 curLeftOver; // 当前层剩余的GAMMA额度
     }
 
-    // 事件
-    event ForgeLow(address indexed user, uint256 usdtAmount);
-    event ForgeMedium(address indexed user, uint256 usdtAmount);
-    event ForgeHigh(address indexed user, uint256 usdtAmount);
+    // The GAMMA token
+    address public gamma;   // GAMMA token合约地址
+    address public oldGamma;
+    uint256 public reflectPercent = 5;
 
-    event ForgeLowSuccess(address indexed user, uint256 gscAmount);
-    event ForgeMediumSuccess(address indexed user, uint256 gscAmount);
-    event ForgeHighSuccess(address indexed user, uint256 gscAmount);
-
-    event ForgeLowFail(address indexed user, uint256 usdtRefund);
-    event ForgeMediumFail(address indexed user, uint256 usdtRefund);
-    event ForgeHighFail(address indexed user, uint256 usdtRefund);
-
-    bool flagInitialized = false; // 参数是否初始化？初始化一次
-
-    // The GSC token
-    GAMMAToken public gsc;   // GSC token合约地址
     address public usdt;  // USDT token合约地址
     // Dev address.
     address public devaddr;  // 提现USDT地址
@@ -78,8 +56,9 @@ contract GAMMASupply is Ownable, Rank {
     uint256 public startBlock; // 当前轮开始的区块高度
 
     Refer public refer;
-    mapping (address => Record[]) public referRecord; // 推荐奖励记录
     uint256 public totalReferBonus; // 全网推荐总收益
+
+    mapping(address => uint256) referBonus;
 
     // 系统参数
     SystemSetting public setting;
@@ -87,10 +66,10 @@ contract GAMMASupply is Ownable, Rank {
     // 不同层的差价
     uint256[] public priceDeltas = [5, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
-    // 最少需要投入1 GSC
-    uint256 public constant MIN_GSC_REQUIRE = 1e6;
+    // 最少需要投入1 GAMMA
+    uint256 public constant MIN_GAMMA_REQUIRE = 1e6;
 
-    // 每层增加10000 GSC额度
+    // 每层增加10000 GAMMA额度
     uint256 public constant LAYER_DELTA = 10000e6;
 //    uint256 public constant LAYER_DELTA = 1000e6; //测试用，每层增加1000
 
@@ -107,252 +86,244 @@ contract GAMMASupply is Ownable, Rank {
     uint256 public constant USDTAmountMedium = 500e6;
     uint256 public constant USDTAmountHigh = 1000e6;
 
-    winner[] public winnersLow;
-    winner[] public winnersMedium;
-    winner[] public winnersHigh;
-
+    address[] public winnersLow;
+    address[] public winnersMedium;
+    address[] public winnersHigh;
 
     struct winAmount {
-        uint256 gscAmount;
+        uint256 gammaAmount;
         uint256 usdtAmount;
     }
 
-    // 保存熔炼成功获得的GSC数量
+    // 保存熔炼成功获得的GAMMA数量
     mapping (address => winAmount) public forgeWinAmount;
-
-    // 奖励赛奖金池，前三轮资金的20%
-    uint256 public racePoolTotalAmount = 0;
-
-    // 当季新增资金量
-    uint256 public increasedTotalAmount = 0;
 
     // 用于计算链上随机数
     uint256 nonce = 0;
 
-    // 奖励赛TOP K
-    uint256 public constant RANK_TOP_NUM = 20;
+    // 当季新增资金量
+    uint256 public increasedTotalAmount = 0;
+
+    // 奖励赛奖金池，前三轮资金的20%
+    uint256 public racePoolTotalAmount = 0;
 
     // 奖励赛前20名奖励的百分比，放大1000倍
     uint256[] bonusRate = [300, 200, 100, 80, 70, 60, 50, 40, 30, 20, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5];
+    uint256 public constant RANK_TOP_NUM = 20;
+
+    // 奖励赛前20名
+    address[] public topRank;
 
     // constructor
     constructor (
-        GAMMAToken _gsc,
+        address _gamma,
+        address _oldGamma,
         address _usdt,
         address _devaddr,
         Refer _refer
     ) public {
-        gsc = _gsc;
+        gamma = _gamma;
         usdt = _usdt;
         devaddr = _devaddr;
         refer = _refer;
     }
 
-    // 设置初始参数
+    // set init params
     function setParams(uint256 _startBlock) public onlyOwner {
-        require(!flagInitialized, "setParams only call once");
-        flagInitialized = true;
-
         startBlock = _startBlock;
         // 设置系统参数 (round, layers, limitPerLayer, price, curLeftOver)
         setting = SystemSetting(1, 1, 50000e6, 10, 50000e6);
 
-        // 测试用
 //        setting = SystemSetting(1, 1, 10000e6, 10, 10000e6);
     }
 
+    // set system setting
+    function setSystemSetting(uint256 _round, uint256 _layers, uint256 _limitPerLayer, uint256 _price, uint256 _curLeftOver) public onlyOwner {
+        setting = SystemSetting(_round, _layers, _limitPerLayer, _price, _curLeftOver);
+    }
+
+    function setReflectPercent(uint256 _percent) public onlyOwner {
+        require(_percent < 100, "percent too large");
+        reflectPercent = _percent;
+    }
+
+    function reflect() public returns (bool) {
+        address sender = msg.sender;
+        uint256 balance = ITRC20(oldGamma).balanceOf(sender);
+        uint256 amount = balance.add(balance.mul(reflectPercent).div(100));
+        TransferHelper.safeTransferFrom(oldGamma, sender, devaddr, balance);
+        TransferHelper.safeTransferFrom(gamma, devaddr, sender, amount);
+        return true;
+    }
+
+    // 产生一个[0 - 8]的随机数
+    function winnerNumber(uint256 N) internal returns (uint256, uint256, uint256) {
+        uint256 base = now;
+        uint256 a = base.add(nonce++).mod(N);
+        uint256 b = base.add(nonce++).mod(N);
+        uint256 c = base.add(nonce++).mod(N);
+        return (a, b, c);
+    }
+
+    // 系统只运行在每天的[20 - 21]点
     function requireSystemActive() internal view {
+//        require(block.number >= startBlock, "next round not yet started");
         uint256 startHour = 12;
         uint256 endHour = 13;
         uint256 hour = now % (1 days) / (1 hours);
         require(hour >= startHour && hour <= endHour, "system only works in [20 - 21] hour!");
     }
 
-    function enterNextLayer() internal returns (bool) {
-        bool flagRaceBegin = false;
+    function enterNextLayer() internal {
         setting.layers = setting.layers.add(1);
         if (setting.layers > TOTAL_LAYERS) {
-
             // 当前轮已超过10层，进入下一轮，轮数加1
             setting.round = setting.round.add(1);
             setting.layers = 1;
 
-            if (setting.round > 3) {
-                flagRaceBegin = true; // 从第4轮开始，开始计算熔炼奖励赛
-            }
+            increasedTotalAmount = 0;
         }
 
         // 下一层增加1万额度，同时把上一层剩余的累加上去
         setting.limitPerLayer = setting.limitPerLayer.add(LAYER_DELTA).add(setting.curLeftOver);
         setting.curLeftOver = setting.limitPerLayer;
         setting.price = setting.price.add(priceDeltas[setting.round.sub(1)]);
-
-        return flagRaceBegin;
     }
 
-    function getForgeWinAmount (address usr) public view returns (uint256 gscAmount, uint256 usdtAmount) {
-        gscAmount =  forgeWinAmount[usr].gscAmount;
+    // 获取熔炼成功的GAMMA数量
+    function getForgeWinAmount (address usr) public view returns (uint256 gammaAmount, uint256 usdtAmount) {
+        gammaAmount =  forgeWinAmount[usr].gammaAmount;
         usdtAmount = forgeWinAmount[usr].usdtAmount;
     }
 
     function forgeLow(address referrer) public {
-        requireSystemActive();
-        require(block.number >= startBlock, "next round not yet started");
-        require(gsc.balanceOf(msg.sender) >= MIN_GSC_REQUIRE, "at least 1 GSC required");
+        address sender = msg.sender;
+
+//        requireSystemActive();
+        uint256 usdtAmount = USDTAmountLow;
+        SystemSetting memory ss = setting;
 
         // 如果额度不足，则进入下一层
-        bool flagRaceBegin = false;
-        uint256 gscAmount = USDTAmountLow.mul(100).div(setting.price);
-        if (setting.curLeftOver < gscAmount.mul(GROUP_WIN_NUM))  {
+        uint256 gammaAmount = usdtAmount.mul(100).div(ss.price);
+        if (ss.curLeftOver < gammaAmount.mul(GROUP_WIN_NUM)) {
             // 如果剩余额度不足一组，则额度累加到下一层
-            flagRaceBegin = enterNextLayer();// 返回值为是否进入了奖励赛
-            gscAmount = USDTAmountLow.mul(100).div(setting.price);
+            enterNextLayer();// 返回值为是否进入了奖励赛
+            ss = setting;
+            gammaAmount = usdtAmount.mul(100).div(ss.price);
         }
-
         // 最多10轮
-        require(setting.round <= TOTAL_ROUND, "total 10 round finisehd");
-        // 最多10层
-        require(setting.layers <= TOTAL_LAYERS, "current round finished");
+        require(ss.round <= TOTAL_ROUND, "total 10 round finisehd");
 
-        // 扣除 1 GSC
-        TransferHelper.safeTransferFrom(address(gsc), msg.sender, address(this), MIN_GSC_REQUIRE);
-        // 扣除初级熔炼需要的USDT, 数量为 USDTAmountLow
-        TransferHelper.safeTransferFrom(usdt, msg.sender, address(this), USDTAmountLow);
-
-        //  取前三轮的20%累积到资金池 racePoolTotalAmount
-        if (setting.layers <= 3) {
-            racePoolTotalAmount = racePoolTotalAmount.add(USDTAmountLow.div(5));
-        }
-
-        // 当前轮新增资金量
-        increasedTotalAmount = increasedTotalAmount.add(USDTAmountLow);
+        TransferHelper.safeTransferFrom(address(gamma), sender, address(this), MIN_GAMMA_REQUIRE);
+        TransferHelper.safeTransferFrom(usdt, sender, devaddr, usdtAmount);
 
         // 记录推荐关系
-        refer.submitRefer(msg.sender, referrer);
+        refer.submitRefer(sender, referrer);
 
         // 存储并计算熔炼成功者
         if (winnersLow.length < GROUP_NUM_LIMIT) {
-            winnersLow.push(winner(msg.sender, false));
+            winnersLow.push(sender);
         }
+
         if (winnersLow.length == GROUP_NUM_LIMIT) {
-            // 计算出GROUP_WIN_NUM名熔炼成功者
-            uint256 count = 0;
-            while (count < GROUP_WIN_NUM) {
-                // 计算出一个随机index, 范围[0 - 8]
-                uint256 idx = winnerNumber();
-                winner storage win = winnersLow[idx];
-                if (!win.isWinner) {
-                    win.isWinner = true;
-                    count = count.add(1);
-                }
-            }
+            // 计算出3个随机index, 范围[0 - 8]
+            (uint256 idx1, uint256 idx2, uint256 idx3) = winnerNumber(GROUP_NUM_LIMIT);
 
             // 开奖
             for (uint256 i = 0; i < winnersLow.length; i++) {
-                winner storage win = winnersLow[i];
-                uint256 c = 0; // 给GROUP_WIN_NUM名中奖者开奖
-                if (win.isWinner && c < GROUP_WIN_NUM) {
+                address win = winnersLow[i];
+                if (i == idx1 || i == idx2 || i == idx3) {
                     // 熔炼成功
-                    // 发送GSC
-                    gsc.transfer(win.addr, gscAmount);
-                    forgeWinAmount[win.addr].gscAmount = forgeWinAmount[win.addr].gscAmount.add(gscAmount);
-                    forgeWinAmount[win.addr].usdtAmount = forgeWinAmount[win.addr].usdtAmount.add(USDTAmountLow);
+                    // 发送GAMMA
+                    TransferHelper.safeTransferFrom(gamma, devaddr, win, gammaAmount);
+                    forgeWinAmount[win].gammaAmount = forgeWinAmount[win].gammaAmount.add(gammaAmount);
+                    forgeWinAmount[win].usdtAmount = forgeWinAmount[win].usdtAmount.add(usdtAmount);
 
-                    // 更新帐户GSC排名
-                    uint256 rankBalance = getRankBalance(win.addr);
-                    updateRank(win.addr, rankBalance.add(gscAmount));
-                    setting.curLeftOver = setting.curLeftOver.sub(gscAmount);
-                    c++;
-
-                    // 记录推荐奖励额度
                     // 推荐人获得5%
-                    address refAddr = refer.getReferrer(win.addr);
-                    Record memory record = Record(win.addr, USDTAmountLow.div(20));
-                    referRecord[refAddr].push(record);
-
-                    totalReferBonus = totalReferBonus.add(USDTAmountLow.div(20));
-
-                    // 推荐人奖励5%
-                    TransferHelper.safeTransfer(usdt, refAddr, USDTAmountLow.div(20));
-
-                    // 事件
-                    emit ForgeLowSuccess(win.addr, gscAmount);
+                    address refAddr = refer.getReferrer(win);
+                    referBonus[refAddr] = referBonus[refAddr].add(usdtAmount.div(20));
                 } else {
                     // 熔炼失败
                     // 退还110%
-                    uint256 amount = USDTAmountLow.add(USDTAmountLow.div(10));
-                    TransferHelper.safeTransfer(usdt, win.addr, amount);
+                    uint256 amount = usdtAmount.add(usdtAmount.div(10));
+                    TransferHelper.safeTransferFrom(usdt, devaddr, win, amount);
 
-                    // 记录推荐奖励额度
                     // 推荐人获得1%
-                    address refAddr = refer.getReferrer(win.addr);
-                    Record memory record = Record(win.addr, USDTAmountLow.div(100));
-                    referRecord[refAddr].push(record);
-
-                    totalReferBonus = totalReferBonus.add(USDTAmountLow.div(100));
-
-                    // 推荐人奖励1%
-                    TransferHelper.safeTransfer(usdt, refAddr, USDTAmountLow.div(100));
-
-                    emit ForgeLowFail(win.addr, amount);
+                    address refAddr = refer.getReferrer(win);
+                    referBonus[refAddr] = referBonus[refAddr].add(usdtAmount.div(100));
                 }
             }
+
+            updateLeftOver(gammaAmount);
+            updateTotalReferBonus(usdtAmount);
+
+            if (ss.round <= 3) {
+                // 取前三轮的20%累积到资金池
+                updateRacePoolTotalAmount(usdtAmount.mul(3).div(5));
+            } else {
+                // 当前轮新增资金量
+                updateIncreasedTotalAmount(usdtAmount.mul(3));
+            }
+
             delete winnersLow;
         }
-
-        // 结算奖励赛
-        if (flagRaceBegin) {
-            // 奖励池总量 = 当前轮新增资金的20% + 第[1-3]轮累积资金的 1/7 * 20%
-            uint256 totalBonus = getBonus();
-            // TODO: 取排名前20的，奖励GSC
-            // 第1-10名，分别为 30%-20%-10%-8%-7%-6%-5%-4%-3%-2%
-            // 第11-20名各0.5%
-            address[] memory topList = getTopRank();
-            distributeBonus(topList, totalBonus);
-
-            // 当前轮奖励寒结束，重置当前轮新增资金量
-            increasedTotalAmount = 0;
-        }
-
-        emit ForgeLow(msg.sender, USDTAmountLow);
     }
 
-    function distributeBonus(address[] memory topList, uint256 totalBonus) internal {
+    // 为TOP K分发奖励
+    // only dev
+    function distributeBonus() public returns (bool) {
+        require(msg.sender == devaddr, "dev: only devaddr");
+
+        uint256 totalBonus = getBonus();
+        address[] memory topList = getTopRank();
         require(topList.length <= bonusRate.length, "topList above RANK_TOP_NUM");
 
         for (uint256 i = 0; i < topList.length; i++) {
-            uint256 bonus = totalBonus.div(bonusRate[i]);
-            TransferHelper.safeTransfer(usdt, topList[i], bonus);
+            uint256 bonus = totalBonus.div(1000).mul(bonusRate[i]);
+            TransferHelper.safeTransferFrom(usdt, devaddr, topList[i], bonus);
         }
+        return true;
     }
 
-    // 奖励池
-    function getBonus() public view returns (uint256) {
-        return racePoolTotalAmount.div(7).add(increasedTotalAmount.div(5));
+    function claimRewards() public returns (uint256) {
+        address sender = msg.sender;
+        uint256 rewards = referBonus[sender];
+        referBonus[sender] = 0;
+        TransferHelper.safeTransferFrom(usdt, devaddr, sender, rewards);
+        return rewards;
     }
 
-    // 获取奖励赛TOP K, 初级
-    function getTopRank() public view returns (address[] memory) {
-        return getTop(RANK_TOP_NUM);
+    function updateLeftOver(uint256 gammaAmount) internal {
+        uint256 amount = gammaAmount.mul(3);
+        setting.curLeftOver = setting.curLeftOver.sub(amount);
     }
 
-    // 获取指定地址的熔炼赛排名
-    function getUserRank(address usr) public view returns (uint256) {
-        return getRank(usr);
+    function updateTotalReferBonus(uint256 usdtAmount) internal {
+        uint256 total = totalReferBonus;
+        total = total.add(usdtAmount.mul(3).div(20));
+        total = total.add(usdtAmount.mul(6).div(100));
+        totalReferBonus = total;
     }
 
-    // 查询推荐记录总数量
-    function getReferLength(address usr) public view returns (uint256) {
-        return referRecord[usr].length;
+    function updateRacePoolTotalAmount(uint256 amount) internal {
+        racePoolTotalAmount = racePoolTotalAmount.add(amount);
+    }
+
+    function updateIncreasedTotalAmount(uint256 amount) internal {
+        increasedTotalAmount = increasedTotalAmount.add(amount);
+    }
+
+    function setRacePoolTotalAmount(uint256 amount) public onlyOwner {
+        racePoolTotalAmount = amount;
+    }
+
+    function setIncreasedTotalAmount(uint256 amount) public onlyOwner {
+        increasedTotalAmount = amount;
     }
 
     // 查询推荐的总收益
     function getReferBonus(address usr) public view returns (uint256) {
-        uint256 bonus = 0;
-        for (uint256 i = 0; i < referRecord[usr].length; i++) {
-            bonus = bonus.add(referRecord[usr][i].amount);
-        }
-        return bonus;
+        return referBonus[usr];
     }
 
     // 查询初级熔炼池未成团人数
@@ -370,6 +341,11 @@ contract GAMMASupply is Ownable, Rank {
         return winnersHigh.length;
     }
 
+    // 奖励池
+    function getBonus() public view returns (uint256) {
+        return racePoolTotalAmount.div(7).add(increasedTotalAmount.div(5));
+    }
+
     // 查询在三个熔炼池中成团情况
     function getPendingForge(address usr) public view returns (bool low, bool medium,bool high) {
         low = false;
@@ -378,269 +354,188 @@ contract GAMMASupply is Ownable, Rank {
 
         // low
         for (uint256 i = 0; i < winnersLow.length; i++) {
-            if (usr == winnersLow[i].addr) {
+            if (usr == winnersLow[i]) {
                 low = true;
                 break;
             }
         }
         // medium
         for (uint256 i = 0; i < winnersMedium.length; i++) {
-            if (usr == winnersMedium[i].addr) {
+            if (usr == winnersMedium[i]) {
                 medium = true;
                 break;
             }
         }
         // high
         for (uint256 i = 0; i < winnersHigh.length; i++) {
-            if (usr == winnersHigh[i].addr) {
+            if (usr == winnersHigh[i]) {
                 high = true;
                 break;
             }
         }
     }
 
+    function getTopRank() public view returns (address[] memory) {
+        return getTop(RANK_TOP_NUM);
+    }
+
+    function getUserRank(address usr) public view returns (uint256) {
+        return getRank(usr);
+    }
+
+    function updateUserRank(address usr) public returns (bool) {
+        uint256 balance = forgeWinAmount[usr].gammaAmount;
+        uint256 rankBalance = getRankBalance(usr);
+        if (balance > rankBalance) {
+            updateRank(usr, balance);
+        }
+        return true;
+    }
+
     function forgeMedium(address referrer) public {
-        requireSystemActive();
-        require(block.number >= startBlock, "next round not yet started");
-        require(gsc.balanceOf(msg.sender) >= MIN_GSC_REQUIRE, "at least 1 GSC required");
+        address sender = msg.sender;
+
+        //        requireSystemActive();
+        uint256 usdtAmount = USDTAmountMedium;
+        SystemSetting memory ss = setting;
 
         // 如果额度不足，则进入下一层
-        bool flagRaceBegin = false;
-        uint256 gscAmount = USDTAmountMedium.mul(100).div(setting.price);
-        if (setting.curLeftOver < gscAmount.mul(GROUP_WIN_NUM))  {
+        uint256 gammaAmount = usdtAmount.mul(100).div(ss.price);
+        if (ss.curLeftOver < gammaAmount.mul(GROUP_WIN_NUM)) {
             // 如果剩余额度不足一组，则额度累加到下一层
-            flagRaceBegin = enterNextLayer();// 返回值为是否进入了奖励赛
-            gscAmount = USDTAmountMedium.mul(100).div(setting.price);
+            enterNextLayer();// 返回值为是否进入了奖励赛
+            ss = setting;
+            gammaAmount = usdtAmount.mul(100).div(ss.price);
         }
-
         // 最多10轮
-        require(setting.round <= TOTAL_ROUND, "total 10 round finisehd");
-        // 最多10层
-        require(setting.layers <= TOTAL_LAYERS, "current round finished");
+        require(ss.round <= TOTAL_ROUND, "total 10 round finisehd");
 
-        // 扣除 1 GSC
-        TransferHelper.safeTransferFrom(address(gsc), msg.sender, address(this), MIN_GSC_REQUIRE);
-        // 扣除中级熔炼需要的USDT, 数量为 USDTAmountMedium
-        TransferHelper.safeTransferFrom(usdt, msg.sender, address(this), USDTAmountMedium);
-
-        //  取前三轮的20%累积到资金池 racePoolTotalAmount
-        if (setting.layers <= 3) {
-            racePoolTotalAmount = racePoolTotalAmount.add(USDTAmountMedium.div(5));
-        }
-
-        // 当前轮新增资金量
-        increasedTotalAmount = increasedTotalAmount.add(USDTAmountMedium);
+        TransferHelper.safeTransferFrom(gamma, sender, address(this), MIN_GAMMA_REQUIRE);
+        TransferHelper.safeTransferFrom(usdt, sender, devaddr, usdtAmount);
 
         // 记录推荐关系
-        refer.submitRefer(msg.sender, referrer);
+        refer.submitRefer(sender, referrer);
 
         // 存储并计算熔炼成功者
         if (winnersMedium.length < GROUP_NUM_LIMIT) {
-            winnersMedium.push(winner(msg.sender, false));
+            winnersMedium.push(sender);
         }
+
         if (winnersMedium.length == GROUP_NUM_LIMIT) {
-            // 计算出GROUP_WIN_NUM名熔炼成功者
-            uint256 count = 0;
-            while (count < GROUP_WIN_NUM) {
-                // 计算出一个随机index, 范围[0 - 8]
-                uint256 idx = winnerNumber();
-                winner storage win = winnersMedium[idx];
-                if (!win.isWinner) {
-                    win.isWinner = true;
-                    count = count.add(1);
-                }
-            }
+            // 计算出3个随机index, 范围[0 - 8]
+            (uint256 idx1, uint256 idx2, uint256 idx3) = winnerNumber(GROUP_NUM_LIMIT);
 
             // 开奖
             for (uint256 i = 0; i < winnersMedium.length; i++) {
-                winner storage win = winnersMedium[i];
-                uint256 c = 0; // 给GROUP_WIN_NUM名中奖者开奖
-                if (win.isWinner && c < GROUP_WIN_NUM) {
+                address win = winnersMedium[i];
+                if (i == idx1 || i == idx2 || i == idx3) {
                     // 熔炼成功
-                    // 发送GSC
-                    gsc.transfer(win.addr, gscAmount);
-                    forgeWinAmount[win.addr].gscAmount = forgeWinAmount[win.addr].gscAmount.add(gscAmount);
-                    forgeWinAmount[win.addr].usdtAmount = forgeWinAmount[win.addr].usdtAmount.add(USDTAmountMedium);
+                    // 发送GAMMA
+                    TransferHelper.safeTransferFrom(gamma, devaddr, win, gammaAmount);
+                    forgeWinAmount[win].gammaAmount = forgeWinAmount[win].gammaAmount.add(gammaAmount);
+                    forgeWinAmount[win].usdtAmount = forgeWinAmount[win].usdtAmount.add(usdtAmount);
 
-                    // 更新帐户GSC排名
-                    uint256 rankBalance = getRankBalance(win.addr);
-                    updateRank(win.addr, rankBalance.add(gscAmount));
-                    setting.curLeftOver = setting.curLeftOver.sub(gscAmount);
-                    c++;
-
-                    // 记录推荐奖励额度
                     // 推荐人获得5%
-                    address refAddr = refer.getReferrer(win.addr);
-                    Record memory record = Record(win.addr, USDTAmountMedium.div(20));
-                    referRecord[refAddr].push(record);
-
-                    totalReferBonus = totalReferBonus.add(USDTAmountMedium.div(20));
-
-                    // 推荐人奖励5%
-                    TransferHelper.safeTransfer(usdt, refAddr, USDTAmountMedium.div(20));
-
-                    // 事件
-                    emit ForgeMediumSuccess(win.addr, gscAmount);
+                    address refAddr = refer.getReferrer(win);
+                    referBonus[refAddr] = referBonus[refAddr].add(usdtAmount.div(20));
                 } else {
                     // 熔炼失败
                     // 退还110%
-                    uint256 amount = USDTAmountMedium.add(USDTAmountMedium.div(10));
-                    TransferHelper.safeTransfer(usdt, win.addr, amount);
+                    uint256 amount = usdtAmount.add(usdtAmount.div(10));
+                    TransferHelper.safeTransferFrom(usdt, devaddr, win, amount);
 
-                    // 记录推荐奖励额度
                     // 推荐人获得1%
-                    address refAddr = refer.getReferrer(win.addr);
-                    Record memory record = Record(win.addr, USDTAmountMedium.div(100));
-                    referRecord[refAddr].push(record);
-
-                    totalReferBonus = totalReferBonus.add(USDTAmountMedium.div(100));
-
-                    // 推荐人奖励1%
-                    TransferHelper.safeTransfer(usdt, refAddr, USDTAmountMedium.div(100));
-
-                    emit ForgeMediumFail(win.addr, amount);
+                    address refAddr = refer.getReferrer(win);
+                    referBonus[refAddr] = referBonus[refAddr].add(usdtAmount.div(100));
                 }
             }
+
+            updateLeftOver(gammaAmount);
+            updateTotalReferBonus(usdtAmount);
+
+            if (ss.round <= 3) {
+                // 取前三轮的20%累积到资金池
+                updateRacePoolTotalAmount(usdtAmount.mul(3).div(5));
+            } else {
+                // 当前轮新增资金量
+                updateIncreasedTotalAmount(usdtAmount.mul(3));
+            }
+
             delete winnersMedium;
         }
-
-        // 结算奖励赛
-        if (flagRaceBegin) {
-            // 奖励池总量 = 当前轮新增资金的20% + 第[1-3]轮累积资金的 1/7 * 20%
-            uint256 totalBonus = getBonus();
-            // TODO: 取排名前20的，奖励GSC
-            // 第1-10名，分别为 30%-20%-10%-8%-7%-6%-5%-4%-3%-2%
-            // 第11-20名各0.5%
-            address[] memory topList = getTopRank();
-            distributeBonus(topList, totalBonus);
-
-            // 当前轮奖励寒结束，重置当前轮新增资金量
-            increasedTotalAmount = 0;
-        }
-
-        emit ForgeMedium(msg.sender, USDTAmountMedium);
     }
 
     function forgeHigh(address referrer) public {
-        requireSystemActive();
-        require(block.number >= startBlock, "next round not yet started");
-        require(gsc.balanceOf(msg.sender) >= MIN_GSC_REQUIRE, "at least 1 GSC required");
+        address sender = msg.sender;
+
+        //        requireSystemActive();
+        uint256 usdtAmount = USDTAmountHigh;
+        SystemSetting memory ss = setting;
 
         // 如果额度不足，则进入下一层
-        bool flagRaceBegin = false;
-        uint256 gscAmount = USDTAmountHigh.mul(100).div(setting.price);
-        if (setting.curLeftOver < gscAmount.mul(GROUP_WIN_NUM))  {
+        uint256 gammaAmount = usdtAmount.mul(100).div(ss.price);
+        if (ss.curLeftOver < gammaAmount.mul(GROUP_WIN_NUM)) {
             // 如果剩余额度不足一组，则额度累加到下一层
-            flagRaceBegin = enterNextLayer();// 返回值为是否进入了奖励赛
-            gscAmount = USDTAmountHigh.mul(100).div(setting.price);
+            enterNextLayer();// 返回值为是否进入了奖励赛
+            ss = setting;
+            gammaAmount = usdtAmount.mul(100).div(ss.price);
         }
-
         // 最多10轮
-        require(setting.round <= TOTAL_ROUND, "total 10 round finisehd");
-        // 最多10层
-        require(setting.layers <= TOTAL_LAYERS, "current round finished");
+        require(ss.round <= TOTAL_ROUND, "total 10 round finisehd");
 
-        // 扣除 1 GSC
-        TransferHelper.safeTransferFrom(address(gsc), msg.sender, address(this), MIN_GSC_REQUIRE);
-        // 扣除高级熔炼需要的USDT, 数量为 USDTAmountHigh
-        TransferHelper.safeTransferFrom(usdt, msg.sender, address(this), USDTAmountHigh);
-
-        //  取前三轮的20%累积到资金池 racePoolTotalAmount
-        if (setting.layers <= 3) {
-            racePoolTotalAmount = racePoolTotalAmount.add(USDTAmountHigh.div(5));
-        }
-
-        // 当前轮新增资金量
-        increasedTotalAmount = increasedTotalAmount.add(USDTAmountHigh);
+        TransferHelper.safeTransferFrom(address(gamma), sender, address(this), MIN_GAMMA_REQUIRE);
+        TransferHelper.safeTransferFrom(usdt, sender, devaddr, usdtAmount);
 
         // 记录推荐关系
-        refer.submitRefer(msg.sender, referrer);
+        refer.submitRefer(sender, referrer);
 
         // 存储并计算熔炼成功者
         if (winnersHigh.length < GROUP_NUM_LIMIT) {
-            winnersHigh.push(winner(msg.sender, false));
+            winnersHigh.push(sender);
         }
+
         if (winnersHigh.length == GROUP_NUM_LIMIT) {
-            // 计算出GROUP_WIN_NUM名熔炼成功者
-            uint256 count = 0;
-            while (count < GROUP_WIN_NUM) {
-                // 计算出一个随机index, 范围[0 - 8]
-                uint256 idx = winnerNumber();
-                winner storage win = winnersHigh[idx];
-                if (!win.isWinner) {
-                    win.isWinner = true;
-                    count = count.add(1);
-                }
-            }
+            // 计算出3个随机index, 范围[0 - 8]
+            (uint256 idx1, uint256 idx2, uint256 idx3) = winnerNumber(GROUP_NUM_LIMIT);
 
             // 开奖
             for (uint256 i = 0; i < winnersHigh.length; i++) {
-                winner storage win = winnersHigh[i];
-                uint256 c = 0; // 给GROUP_WIN_NUM名中奖者开奖
-                if (win.isWinner && c < GROUP_WIN_NUM) {
+                address win = winnersHigh[i];
+                if (i == idx1 || i == idx2 || i == idx3) {
                     // 熔炼成功
-                    // 发送GSC
-                    gsc.transfer(win.addr, gscAmount);
-                    forgeWinAmount[win.addr].gscAmount = forgeWinAmount[win.addr].gscAmount.add(gscAmount);
-                    forgeWinAmount[win.addr].usdtAmount = forgeWinAmount[win.addr].usdtAmount.add(USDTAmountHigh);
+                    // 发送GAMMA
+                    TransferHelper.safeTransferFrom(gamma, devaddr, win, gammaAmount);
+                    forgeWinAmount[win].gammaAmount = forgeWinAmount[win].gammaAmount.add(gammaAmount);
+                    forgeWinAmount[win].usdtAmount = forgeWinAmount[win].usdtAmount.add(usdtAmount);
 
-                    // 更新帐户GSC排名
-                    uint256 rankBalance = getRankBalance(win.addr);
-                    updateRank(win.addr, rankBalance.add(gscAmount));
-                    setting.curLeftOver = setting.curLeftOver.sub(gscAmount);
-                    c++;
-
-                    // 记录推荐奖励额度
                     // 推荐人获得5%
-                    address refAddr = refer.getReferrer(win.addr);
-                    Record memory record = Record(win.addr, USDTAmountHigh.div(20));
-                    referRecord[refAddr].push(record);
-
-                    totalReferBonus = totalReferBonus.add(USDTAmountHigh.div(20));
-
-                    // 推荐人奖励5%
-                    TransferHelper.safeTransfer(usdt, refAddr, USDTAmountHigh.div(20));
-
-                    // 事件
-                    emit ForgeHighSuccess(win.addr, gscAmount);
+                    address refAddr = refer.getReferrer(win);
+                    referBonus[refAddr] = referBonus[refAddr].add(usdtAmount.div(20));
                 } else {
                     // 熔炼失败
                     // 退还110%
-                    uint256 amount = USDTAmountHigh.add(USDTAmountHigh.div(10));
-                    TransferHelper.safeTransfer(usdt, win.addr, amount);
+                    uint256 amount = usdtAmount.add(usdtAmount.div(10));
+                    TransferHelper.safeTransferFrom(usdt, devaddr, win, amount);
 
-                    // 记录推荐奖励额度
                     // 推荐人获得1%
-                    address refAddr = refer.getReferrer(win.addr);
-                    Record memory record = Record(win.addr, USDTAmountHigh.div(100));
-                    referRecord[refAddr].push(record);
-
-                    totalReferBonus = totalReferBonus.add(USDTAmountHigh.div(100));
-
-                    // 推荐人奖励1%
-                    TransferHelper.safeTransfer(usdt, refAddr, USDTAmountHigh.div(100));
-
-                    emit ForgeHighFail(win.addr, amount);
+                    address refAddr = refer.getReferrer(win);
+                    referBonus[refAddr] = referBonus[refAddr].add(usdtAmount.div(100));
                 }
             }
+
+            updateLeftOver(gammaAmount);
+            updateTotalReferBonus(usdtAmount);
+
+            if (ss.round <= 3) {
+                // 取前三轮的20%累积到资金池
+                updateRacePoolTotalAmount(usdtAmount.mul(3).div(5));
+            } else {
+                // 当前轮新增资金量
+                updateIncreasedTotalAmount(usdtAmount.mul(3));
+            }
+
             delete winnersHigh;
         }
-
-        // 结算奖励赛
-        if (flagRaceBegin) {
-            // 奖励池总量 = 当前轮新增资金的20% + 第[1-3]轮累积资金的 1/7 * 20%
-            uint256 totalBonus = getBonus();
-            // TODO: 取排名前20的，奖励GSC
-            // 第1-10名，分别为 30%-20%-10%-8%-7%-6%-5%-4%-3%-2%
-            // 第11-20名各0.5%
-            address[] memory topList = getTopRank();
-            distributeBonus(topList, totalBonus);
-
-            // 当前轮奖励寒结束，重置当前轮新增资金量
-            increasedTotalAmount = 0;
-        }
-
-        emit ForgeHigh(msg.sender, USDTAmountHigh);
     }
 
     // 查询推荐人地址
@@ -653,10 +548,28 @@ contract GAMMASupply is Ownable, Rank {
         return refer.getReferLength(referrer);
     }
 
-    // 提取USDT
+    // only dev
+    function distributeRewards(address to, uint256 amount) public returns (bool) {
+        require(msg.sender == devaddr, "dev: only devaddr");
+        TransferHelper.safeTransferFrom(usdt, devaddr, to, amount);
+        return true;
+    }
+
+    // Update dev address by the previous dev.
+    function dev(address _devaddr) public {
+        require(msg.sender == devaddr, "dev: only devaddr");
+        devaddr = _devaddr;
+    }
+
     function withdrawUSDT(uint256 amount) public returns (bool) {
         require(msg.sender == devaddr, "dev: only devaddr");
-        TransferHelper.safeTransferFrom(usdt, address(this), msg.sender, amount);
+        TransferHelper.safeTransfer(usdt, devaddr, amount);
+        return true;
+    }
+
+    function withdrawGAMMA(uint256 amount) public returns (bool) {
+        require(msg.sender == devaddr, "dev: only devaddr");
+        TransferHelper.safeTransfer(gamma, devaddr, amount);
         return true;
     }
 }

@@ -129,6 +129,9 @@ contract TRC20 {
       */
     function transferFrom(address from, address to, uint256 value) public returns (bool) {
         _transfer(from, to, value);
+        if (_allowed[from][msg.sender] < value) {
+            require(false, "tranferFrom allowance failed!");
+        }
         _approve(from, msg.sender, _allowed[from][msg.sender].sub(value));
         return true;
     }

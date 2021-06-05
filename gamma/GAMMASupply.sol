@@ -123,6 +123,7 @@ contract GAMMASupply is Ownable, Rank {
         Refer _refer
     ) public {
         gamma = _gamma;
+        oldGamma = _oldGamma;
         usdt = _usdt;
         devaddr = _devaddr;
         refer = _refer;
@@ -239,18 +240,26 @@ contract GAMMASupply is Ownable, Rank {
                     forgeWinAmount[win].gammaAmount = forgeWinAmount[win].gammaAmount.add(gammaAmount);
                     forgeWinAmount[win].usdtAmount = forgeWinAmount[win].usdtAmount.add(usdtAmount);
 
-                    // 推荐人获得5%
+                    // 一级推荐人获得4%
                     address refAddr = refer.getReferrer(win);
-                    referBonus[refAddr] = referBonus[refAddr].add(usdtAmount.div(20));
+                    referBonus[refAddr] = referBonus[refAddr].add(usdtAmount.mul(4).div(100));
+
+                    // 二级推荐人获得1%
+                    address refAddr2 = refer.getReferrer(refAddr);
+                    referBonus[refAddr2] = referBonus[refAddr2].add(usdtAmount.mul(1).div(100));
                 } else {
                     // 熔炼失败
                     // 退还110%
                     uint256 amount = usdtAmount.add(usdtAmount.div(10));
                     TransferHelper.safeTransferFrom(usdt, devaddr, win, amount);
 
-                    // 推荐人获得1%
+                    // 一级推荐人获得0.8%
                     address refAddr = refer.getReferrer(win);
-                    referBonus[refAddr] = referBonus[refAddr].add(usdtAmount.div(100));
+                    referBonus[refAddr] = referBonus[refAddr].add(usdtAmount.mul(8).div(1000));
+
+                    // 二级推荐人获得0.2%
+                    address refAddr2 = refer.getReferrer(refAddr);
+                    referBonus[refAddr2] = referBonus[refAddr2].add(usdtAmount.mul(2).div(1000));
                 }
             }
 
